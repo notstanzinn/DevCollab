@@ -1,0 +1,13 @@
+{
+  "name": "devcollab",
+  "version": "1.0.0",
+  "description": "Real-time code snippet collaboration platform",
+  "scripts": {
+    "build": "cd client && npm install && npm run build",
+    "start": "cd server && node index.js",
+    "install-all": "cd server && npm install && cd ../client && npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
