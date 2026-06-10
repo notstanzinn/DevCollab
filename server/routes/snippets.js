@@ -85,24 +85,21 @@ router.get('/:id', optionalAuth, async (req, res) => {
   try {
     const snippet = await Snippet.findById(req.params.id)
       .populate('author', 'name avatar bio')
-      .populate('forkedFrom', 'title author');
+      .populate('forkedFrom', 'title author')
+      .populate('collaborators', 'name avatar email');
 
     if (!snippet) return res.status(404).json({ message: 'Snippet not found' });
     if (!snippet.isPublic && String(snippet.author._id) !== String(req.user?._id)) {
       return res.status(403).json({ message: 'This snippet is private' });
     }
 
-    // Track unique account views.
-
+    // Track unique account views
     if (req.user) {
       const result = await Snippet.updateOne(
         { _id: req.params.id, viewedBy: { $ne: req.user._id } },
         { $inc: { views: 1 }, $addToSet: { viewedBy: req.user._id } }
       );
-      // Reflect the increment in the snippet object sent back this request
-      if (result.modifiedCount > 0) {
-        snippet.views = (snippet.views || 0) + 1;
-      }
+      if (result.modifiedCount > 0) snippet.views = (snippet.views || 0) + 1;
     }
 
     res.json({ snippet });
@@ -111,20 +108,31 @@ router.get('/:id', optionalAuth, async (req, res) => {
   }
 });
 
-
-// PUT /api/snippets/:id — update snippet
+// PUT /api/snippets/:id — update snippet (owner: all fields | collaborator: code only)
 router.put('/:id', protect, async (req, res) => {
   try {
     const snippet = await Snippet.findById(req.params.id);
     if (!snippet) return res.status(404).json({ message: 'Snippet not found' });
-    if (String(snippet.author) !== String(req.user._id)) {
+
+    const isOwner        = String(snippet.author) === String(req.user._id);
+    const isCollaborator = snippet.collaborators.some(c => String(c) === String(req.user._id));
+
+    if (!isOwner && !isCollaborator) {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
-    const { title, code, language, description, tags, isPublic } = req.body;
-    Object.assign(snippet, { title, code, language, description, tags, isPublic });
+    if (isOwner) {
+      // Owner can update everything
+      const { title, code, language, description, tags, isPublic } = req.body;
+      Object.assign(snippet, { title, code, language, description, tags, isPublic });
+    } else {
+      // Collaborators can only save the code
+      snippet.code = req.body.code;
+    }
+
     await snippet.save();
     await snippet.populate('author', 'name avatar');
+    await snippet.populate('collaborators', 'name avatar email');
     res.json({ snippet });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -153,14 +161,13 @@ router.post('/:id/star', protect, async (req, res) => {
     const snippet = await Snippet.findById(req.params.id).populate('author', 'name email');
     if (!snippet) return res.status(404).json({ message: 'Snippet not found' });
 
-    const userId = req.user._id;
+    const userId        = req.user._id;
     const alreadyStarred = snippet.stars.includes(userId);
 
     if (alreadyStarred) {
       snippet.stars.pull(userId);
     } else {
       snippet.stars.push(userId);
-      // Notify snippet owner (async)
       if (String(snippet.author._id) !== String(userId)) {
         Notification.create({
           recipient: snippet.author._id,
@@ -199,7 +206,6 @@ router.post('/:id/fork', protect, async (req, res) => {
     original.forks.push(forked._id);
     await original.save();
 
-    // Notify original author
     if (String(original.author._id) !== String(req.user._id)) {
       Notification.create({
         recipient: original.author._id,
@@ -212,6 +218,75 @@ router.post('/:id/fork', protect, async (req, res) => {
 
     await forked.populate('author', 'name avatar');
     res.status(201).json({ snippet: forked });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────
+// COLLABORATOR ROUTES
+// ─────────────────────────────────────────────────────────
+
+// POST /api/snippets/:id/collaborators — owner adds a collaborator by email or username
+router.post('/:id/collaborators', protect, async (req, res) => {
+  try {
+    const snippet = await Snippet.findById(req.params.id);
+    if (!snippet) return res.status(404).json({ message: 'Snippet not found' });
+    if (String(snippet.author) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Only the owner can add collaborators' });
+    }
+
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ message: 'Email is required' });
+
+    const targetUser = await User.findOne({ email: email.toLowerCase().trim() }).select('_id name avatar email');
+    if (!targetUser) return res.status(404).json({ message: 'No user found with that email' });
+
+    if (String(targetUser._id) === String(req.user._id)) {
+      return res.status(400).json({ message: 'You are already the owner' });
+    }
+
+    const alreadyCollaborator = snippet.collaborators.some(c => String(c) === String(targetUser._id));
+    if (alreadyCollaborator) {
+      return res.status(400).json({ message: 'User is already a collaborator' });
+    }
+
+    snippet.collaborators.push(targetUser._id);
+    await snippet.save();
+
+    // Notify the invited user
+    Notification.create({
+      recipient: targetUser._id,
+      sender: req.user._id,
+      type: 'comment',
+      message: `${req.user.name} added you as a collaborator on "${snippet.title}"`,
+      link: `/snippets/${snippet._id}`,
+    }).catch(console.error);
+
+    res.json({ collaborator: targetUser, message: `${targetUser.name} added as collaborator` });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// DELETE /api/snippets/:id/collaborators/:userId — owner removes a collaborator
+router.delete('/:id/collaborators/:userId', protect, async (req, res) => {
+  try {
+    const snippet = await Snippet.findById(req.params.id);
+    if (!snippet) return res.status(404).json({ message: 'Snippet not found' });
+
+    const isOwner = String(snippet.author) === String(req.user._id);
+    const isSelf  = String(req.params.userId) === String(req.user._id);
+
+    // Owner can remove anyone; collaborators can remove themselves
+    if (!isOwner && !isSelf) {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
+
+    snippet.collaborators.pull(req.params.userId);
+    await snippet.save();
+
+    res.json({ message: 'Collaborator removed' });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -252,7 +327,6 @@ router.post(
       });
       await comment.populate('author', 'name avatar');
 
-      // Notify snippet owner
       if (String(snippet.author._id) !== String(req.user._id)) {
         Notification.create({
           recipient: snippet.author._id,

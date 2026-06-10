@@ -25,6 +25,7 @@ const snippetSchema = new mongoose.Schema(
     viewedBy: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], select: false, default: [] },
     forks: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Snippet' }],
     forkedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Snippet', default: null },
+    collaborators: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   },
   { timestamps: true }
 );
