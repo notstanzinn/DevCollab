@@ -7,20 +7,19 @@ const { protect } = require('../middleware/authMiddleware');
 const { sendWelcomeEmail } = require('../services/email');
 const { createCustomer } = require('../services/stripe');
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+const cookieOptions = (maxAge, path) => ({
+  httpOnly: true,
+  secure: isProduction,          // HTTPS only in production
+  sameSite: isProduction ? 'none' : 'lax', // 'none' required for cross-origin cookies
+  maxAge,
+  ...(path && { path }),
+});
+
 const setTokenCookies = (res, accessToken, refreshToken) => {
-  res.cookie('accessToken', accessToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 15 * 60 * 1000, // 15 min
-  });
-  res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    path: '/api/auth/refresh',
-  });
+  res.cookie('accessToken',  accessToken,  cookieOptions(15 * 60 * 1000));
+  res.cookie('refreshToken', refreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000, '/api/auth/refresh'));
 };
 
 // POST /api/auth/register
@@ -131,8 +130,8 @@ router.post(
 router.post('/logout', protect, async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user._id, { refreshToken: '' });
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken', { path: '/api/auth/refresh' });
+    res.clearCookie('accessToken',  cookieOptions(0));
+    res.clearCookie('refreshToken', cookieOptions(0, '/api/auth/refresh'));
     res.json({ message: 'Logged out successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Server error during logout' });
