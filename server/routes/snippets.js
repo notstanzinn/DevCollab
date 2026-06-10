@@ -122,9 +122,15 @@ router.put('/:id', protect, async (req, res) => {
     }
 
     if (isOwner) {
-      // Owner can update everything
+      // Only overwrite fields that were actually sent in the request body
+      // (the Save button in SnippetView sends only { code }, EditSnippet sends everything)
       const { title, code, language, description, tags, isPublic } = req.body;
-      Object.assign(snippet, { title, code, language, description, tags, isPublic });
+      if (title       !== undefined) snippet.title       = title;
+      if (code        !== undefined) snippet.code        = code;
+      if (language    !== undefined) snippet.language    = language;
+      if (description !== undefined) snippet.description = description;
+      if (tags        !== undefined) snippet.tags        = tags;
+      if (isPublic    !== undefined) snippet.isPublic    = isPublic;
     } else {
       // Collaborators can only save the code
       snippet.code = req.body.code;
